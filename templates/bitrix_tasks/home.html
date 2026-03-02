@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Результаты сегментации</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 900px; margin: 0 auto; padding: 1.5rem; }
+        h1 { margin-top: 0; }
+        .run { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+        .run h2 { margin: 0 0 0.5rem; font-size: 1rem; color: #666; }
+        .run .meta { font-size: 0.875rem; color: #888; margin-bottom: 0.75rem; }
+        .run .result { white-space: pre-wrap; background: #f8f9fa; padding: 1rem; border-radius: 4px; }
+        .contact { border: 1px solid #eee; border-radius: 6px; padding: 0.75rem; margin-bottom: 0.5rem; }
+        .contact .tags { font-size: 0.875rem; color: #333; }
+        .tag { display: inline-block; background: #e7f1ff; padding: 0.2rem 0.5rem; border-radius: 4px; margin: 0.2rem 0.2rem 0 0; }
+        .empty { color: #888; }
+        .limit { font-size: 0.9rem; color: #666; }
+        a { color: #0d6efd; }
+    </style>
+</head>
+<body>
+    <h1>Результаты сегментации</h1>
+    <p>
+        {% if user.is_authenticated %}
+            Вы вошли как <strong>{{ user.username }}</strong>.
+            <a href="{% url 'my_tasks' %}">Мои задания</a> ·
+            <a href="{% url 'contact_list' %}">Мои клиенты</a> ·
+            <a href="{% url 'logout' %}">Выйти</a>
+        {% else %}
+            <a href="{% url 'login' %}">Войти</a> ·
+            <a href="{% url 'register' %}">Регистрация</a>
+        {% endif %}
+        · <a href="/admin/">Админка</a>
+    </p>
+    {% if user.is_authenticated and max_recordings_allowed is not None %}
+        <p class="limit">Лимит записей: использовано <strong>{{ recordings_used }}</strong>, осталось <strong>{{ recordings_remaining }}</strong>.</p>
+    {% endif %}
+    <p>Запуски: записи выкачаны → расшифрованы (Vosk) → сгруппированы по контакту → теги в DeepSeek. Ниже последние запуски и теги по контактам.</p>
+
+    {% if user.is_authenticated and contacts_with_tags %}
+        <h2>Теги по контактам</h2>
+        {% for seg in contacts_with_tags %}
+            <div class="contact">
+                <strong>{{ seg.contact }}</strong>
+                <div class="tags">
+                    {% for tag in seg.tags %}
+                        <span class="tag">{{ tag }}</span>
+                    {% endfor %}
+                </div>
+            </div>
+        {% endfor %}
+    {% endif %}
+
+    <h2>Последние запуски</h2>
+    {% if runs %}
+        {% for run in runs %}
+            <article class="run">
+                <h2>Запуск {{ run.created_at|date:"d.m.Y H:i" }}</h2>
+                <div class="meta">
+                    Записей: {{ run.num_recordings }}, подключений: {{ run.num_clients }} —
+                    транскрипций: {{ run.trans_count }}
+                </div>
+                <div class="result">{{ run.segmentation_result.text }}</div>
+            </article>
+        {% endfor %}
+    {% else %}
+        <p class="empty">Пока нет результатов. {% if user.is_authenticated %}Создайте задание в админке, привяжите к себе и <a href="{% url 'my_tasks' %}">запустите</a>.{% else %}Войдите или зарегистрируйтесь и запустите задание.{% endif %}</p>
+    {% endif %}
+</body>
+</html>

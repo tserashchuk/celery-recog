@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Мои задания</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 700px; margin: 0 auto; padding: 1.5rem; }
+        h1, h2 { margin-top: 0; }
+        .task { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center; }
+        .limit { font-size: 0.875rem; color: #666; margin-bottom: 1rem; }
+        form { display: inline; }
+        button.run { padding: 0.4rem 0.8rem; background: #0d6efd; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+        button.run:disabled { opacity: 0.6; cursor: not-allowed; }
+        .create-form { background: #f8f9fa; padding: 1rem; border-radius: 8px; margin-bottom: 1.5rem; }
+        .create-form input { padding: 0.35rem; margin: 0.25rem 0; width: 100%; max-width: 300px; box-sizing: border-box; }
+        .create-form label { display: block; margin-top: 0.5rem; }
+        .create-form button { margin-top: 0.75rem; padding: 0.5rem 1rem; }
+        a { color: #0d6efd; }
+        .messages { list-style: none; padding: 0; }
+        .messages .error { color: #c00; }
+        .messages .success { color: #0a0; }
+    </style>
+</head>
+<body>
+    <h1>Мои задания</h1>
+    <p>
+        <a href="{% url 'home' %}">На главную</a> ·
+        <a href="{% url 'connection_edit' %}">Мой вебхук Битрикс24</a> ·
+        <a href="{% url 'contact_list' %}">Мои клиенты</a> ·
+        <a href="{% url 'logout' %}">Выйти</a>
+    </p>
+    {% if max_recordings_allowed is not None %}
+        <p class="limit">Всего разрешено записей: <strong>{{ max_recordings_allowed }}</strong>. Обработано: <strong>{{ recordings_used }}</strong>. <strong>Осталось записей: {{ recordings_remaining }}</strong></p>
+    {% else %}
+        <p class="limit">Обработано записей: <strong>{{ recordings_used }}</strong>. Лимит не установлен.</p>
+    {% endif %}
+    {% if messages %}
+        <ul class="messages">
+            {% for message in messages %}
+                <li class="{{ message.tags }}">{{ message }}</li>
+            {% endfor %}
+        </ul>
+    {% endif %}
+
+    <div id="run-progress" data-url="{% url 'run_progress' %}" style="margin-bottom: 0.5rem; font-size: 0.9rem; color: #555;"></div>
+    <button type="button" onclick="updateRunProgress()" style="margin-bottom: 1rem;">Обновить статус последнего запуска</button>
+
+    <h2>Создать задание</h2>
+    <div class="create-form">
+        {% if connection %}
+            <p style="font-size:0.875rem; color:#666;">Используется ваш вебхук. Ключ DeepSeek задаётся глобально в настройках сервера.</p>
+        {% else %}
+            <p style="color:#c00;">Сначала добавьте <a href="{% url 'connection_edit' %}">вебхук Битрикс24</a>.</p>
+        {% endif %}
+        <form method="post" action="{% url 'my_tasks' %}">
+            {% csrf_token %}
+            <input type="hidden" name="create_task" value="1">
+            {{ form.as_p }}
+            <button type="submit" name="submit_create" {% if not connection %}disabled{% endif %}>Создать задание</button>
+        </form>
+    </div>
+
+    <h2>Список заданий</h2>
+    {% if tasks %}
+        {% for task in tasks %}
+            <div class="task">
+                <div>
+                    <strong>{{ task.name }}</strong><br>
+                    Записей за запуск: {{ task.num_recordings }}
+                    {% if task.config %} · {{ task.config.name }}{% endif %}
+                </div>
+                <form action="{% url 'run_task' task.id %}" method="post">
+                    {% csrf_token %}
+                    {% if recordings_remaining is not None and task.num_recordings > recordings_remaining %}
+                        <button type="button" class="run" disabled title="Недостаточно лимита">Запустить</button>
+                    {% else %}
+                        <button type="submit" class="run">Запустить</button>
+                    {% endif %}
+                </form>
+            </div>
+        {% endfor %}
+    {% else %}
+        <p>Нет заданий. Создайте задание формой выше (предварительно добавьте вебхук).</p>
+    {% endif %}
+
+    <script>
+    function updateRunProgress() {
+        const el = document.getElementById("run-progress");
+        if (!el) return;
+        const url = el.dataset.url;
+        fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (!data || !data.status || data.status === "none") {
+                    el.textContent = "Нет активных запусков.";
+                    return;
+                }
+                const total = data.total || 0;
+                const current = data.current || 0;
+                if (total > 0) {
+                    const pct = Math.round(current * 100 / total);
+                    el.textContent = "Текущий запуск: " + current + " из " + total + " (" + pct + "%), статус: " + data.status;
+                } else {
+                    el.textContent = "Текущий запуск: статус " + data.status;
+                }
+            })
+            .catch(function () {
+                el.textContent = "Не удалось получить статус запуска.";
+            });
+    }
+    </script>
+</body>
+</html>

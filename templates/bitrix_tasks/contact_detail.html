@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Контакт — {{ contact }}</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 1.5rem; }
+        h1, h2 { margin-top: 0; }
+        .tags .tag { display: inline-block; background: #e7f1ff; padding: 0.2rem 0.5rem; border-radius: 4px; margin: 0.2rem 0.2rem 0 0; }
+        .transcription { border: 1px solid #eee; border-radius: 6px; padding: 1rem; margin-bottom: 1rem; }
+        .transcription .file { font-weight: bold; margin-bottom: 0.5rem; }
+        .transcription .text { white-space: pre-wrap; font-size: 0.9rem; color: #333; }
+        .transcription .date { font-size: 0.8rem; color: #888; }
+        a { color: #0d6efd; }
+    </style>
+</head>
+<body>
+    <h1>{{ contact }}</h1>
+    <p class="meta">{{ contact.get_entity_type_display }} · ID в Битрикс: {{ contact.entity_id }}</p>
+    <p><a href="{% url 'contact_list' %}">← Все клиенты</a> · <a href="{% url 'my_tasks' %}">Мои задания</a></p>
+
+    {% if segmentation and segmentation.tags %}
+        <h2>Теги сегментации</h2>
+        <div class="tags">
+            {% for tag in segmentation.tags %}
+                <span class="tag">{{ tag }}</span>
+            {% endfor %}
+        </div>
+    {% endif %}
+
+    <h2>Транскрипции записей</h2>
+    {% if transcriptions %}
+        {% for t in transcriptions %}
+            <div class="transcription">
+                <div class="file">{{ t.file_name }}</div>
+                <div class="date">{{ t.updated_at|date:"d.m.Y H:i" }}</div>
+                <div class="text">{{ t.text }}</div>
+            </div>
+        {% endfor %}
+    {% else %}
+        <p>Нет расшифровок. Запустите задание для загрузки и распознавания записей.</p>
+    {% endif %}
+</body>
+</html>

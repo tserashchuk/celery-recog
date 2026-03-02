@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Мои клиенты</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 700px; margin: 0 auto; padding: 1.5rem; }
+        h1 { margin-top: 0; }
+        .contact { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+        .contact a { color: #0d6efd; text-decoration: none; }
+        .contact a:hover { text-decoration: underline; }
+        .tags { margin-top: 0.5rem; }
+        .tag { display: inline-block; background: #e7f1ff; padding: 0.2rem 0.5rem; border-radius: 4px; margin: 0.2rem 0.2rem 0 0; font-size: 0.875rem; }
+        .meta { font-size: 0.875rem; color: #666; }
+    </style>
+</head>
+<body>
+    <h1>Мои клиенты</h1>
+    <p>Контакты с тегами сегментации. Нажмите на контакт, чтобы посмотреть транскрипции записей.</p>
+    <p><a href="{% url 'home' %}">На главную</a> · <a href="{% url 'my_tasks' %}">Мои задания</a> · <a href="{% url 'logout' %}">Выйти</a></p>
+
+    {% if contact_list_data %}
+        {% for contact, seg, brief in contact_list_data %}
+            <div class="contact">
+                <a href="{% url 'contact_detail' contact.id %}"><strong>{{ contact }}</strong></a>
+                <div class="meta">{{ contact.get_entity_type_display }} · ID {{ contact.entity_id }}</div>
+                {% if brief %}
+                    <div class="meta">Последний звонок: {{ brief }}</div>
+                {% endif %}
+                {% if seg and seg.tags %}
+                    <div class="tags">
+                        {% for tag in seg.tags %}
+                            <span class="tag">{{ tag }}</span>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            </div>
+        {% endfor %}
+    {% else %}
+        <p>Пока нет клиентов. Запустите задание — после обработки звонков здесь появятся контакты с тегами.</p>
+    {% endif %}
+</body>
+</html>
