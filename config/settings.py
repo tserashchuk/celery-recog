@@ -83,12 +83,16 @@ LOGIN_URL = "/accounts/login/"
 LOGIN_REDIRECT_URL = "/"
 LOGOUT_REDIRECT_URL = "/"
 
-# Bitrix / Vosk / DeepSeek
-# Путь к модели Vosk (по умолчанию: папка vosk-model-ru-0.42 в корне проекта)
-VOSK_MODEL_PATH = os.environ.get(
-    "VOSK_MODEL_PATH",
-    str(BASE_DIR / "vosk-model-small-ru-0.22"),
+# Bitrix / Whisper (faster-whisper) / DeepSeek
+# Модель faster-whisper: tiny, base, small, medium, large-v2, large-v3
+# Каталог, куда скачивается и откуда грузится модель (один раз при первом запуске или по команде download_whisper_model)
+WHISPER_DOWNLOAD_ROOT = os.environ.get(
+    "WHISPER_DOWNLOAD_ROOT",
+    str(BASE_DIR / "whisper_models"),
 )
+WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL_SIZE", "small")
+WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")  # cpu или cuda
+WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")  # int8, float16, float32
 # Глобальный DeepSeek API Key (можно задать здесь или через переменную окружения)
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "sk-7f570d1b87dc401c87a80638509eb4a5")
 # Для варианта с диском Битрикс24: имя хранилища и путь к папке

@@ -131,6 +131,7 @@ def run_task(request, task_id):
         task.num_recordings,
         task.num_clients,
         task.config_id,
+        task.skip_existing,
     )
     messages.success(request, f"Задание «{task.name}» поставлено в очередь.")
     return redirect("my_tasks")

@@ -1,12 +1,13 @@
 """
 Задача по образцу sa: на вход — количество записей и количество клиентов.
-Выкачивание → по одной транскрибация (Vosk) → сохранение в БД → отправка в DeepSeek → результат сегментации.
+Выкачивание → по одной транскрибация (faster-whisper) → сохранение в БД → отправка в DeepSeek → результат сегментации.
 API Битрикс24 вызывается через requests (как в sa), без пакета bitrix24.
 """
 import io
 import json as json_lib
 import logging
 import os
+import tempfile
 from datetime import datetime, timedelta
 from urllib.parse import urljoin
 
@@ -30,7 +31,14 @@ logger = logging.getLogger(__name__)
 
 
 @shared_task(bind=True, name="bitrix_tasks.run_download_transcribe_segment")
-def run_download_transcribe_segment(self, user_id, num_recordings: int, num_clients: int, config_id=None):
+def run_download_transcribe_segment(
+    self,
+    user_id,
+    num_recordings: int,
+    num_clients: int,
+    config_id=None,
+    skip_existing: bool = True,
+):
     """
     user_id — владелец (или None для «все подключения», совместимость с админкой).
     Для каждого подключения качаем записи, по одной расшифровываем Vosk, группируем по контакту (CRM),
@@ -62,8 +70,8 @@ def run_download_transcribe_segment(self, user_id, num_recordings: int, num_clie
         progress_current=0,
     )
 
-    # Модель Vosk загружаем один раз на весь запуск (не на каждый файл)
-    vosk_model = _load_vosk_model()
+    # Модель faster-whisper загружаем один раз на весь запуск (не на каждый файл)
+    whisper_model = _load_whisper_model()
 
     per_client = max(1, num_recordings // len(connections))
     total_processed = 0
@@ -83,24 +91,35 @@ def run_download_transcribe_segment(self, user_id, num_recordings: int, num_clie
                 break
             try:
                 name = file_info.get("NAME", "?")
-                # Если такая запись уже есть в базе — пропускаем, чтобы не тратить ресурсы
-                if not user_id:
-                    if Transcription.objects.filter(connection=conn, file_name=name).exists():
-                        print(f"[Bitratata] Пропуск {name}: транскрипция уже есть в БД")
-                        continue
+                # Вариант: пропускать уже существующие транскрипции (по настройке задания)
+                if skip_existing:
+                    if not user_id:
+                        if Transcription.objects.filter(connection=conn, file_name=name).exists():
+                            print(f"[Bitratata] Пропуск {name}: транскрипция уже есть в БД")
+                            continue
+                    else:
+                        contact = _get_or_create_contact(
+                            user_id=user_id,
+                            connection=conn,
+                            entity_type=file_info.get("ENTITY_TYPE") or "CALL",
+                            entity_id=str(file_info.get("ENTITY_ID") or file_info.get("ID") or total_processed),
+                        )
+                        if Transcription.objects.filter(contact=contact, file_name=name).exists():
+                            print(f"[Bitratata] Пропуск {name}: транскрипция уже есть для контакта")
+                            continue
                 else:
-                    contact = _get_or_create_contact(
-                        user_id=user_id,
-                        connection=conn,
-                        entity_type=file_info.get("ENTITY_TYPE") or "CALL",
-                        entity_id=str(file_info.get("ENTITY_ID") or file_info.get("ID") or total_processed),
-                    )
-                    if Transcription.objects.filter(contact=contact, file_name=name).exists():
-                        print(f"[Bitratata] Пропуск {name}: транскрипция уже есть для контакта")
-                        continue
+                    # Если не пропускаем существующие — всё равно создаём/обновляем contact,
+                    # чтобы ниже update_or_create сработал корректно.
+                    if user_id:
+                        contact = _get_or_create_contact(
+                            user_id=user_id,
+                            connection=conn,
+                            entity_type=file_info.get("ENTITY_TYPE") or "CALL",
+                            entity_id=str(file_info.get("ENTITY_ID") or file_info.get("ID") or total_processed),
+                        )
 
                 print(f"[Bitratata] Обработка {total_processed + 1}/{num_recordings}: {name} ...")
-                text = _download_and_transcribe(file_info, conn, vosk_model)
+                text = _download_and_transcribe(file_info, conn, whisper_model)
                 if not text:
                     continue
                 if not user_id:
@@ -134,16 +153,11 @@ def run_download_transcribe_segment(self, user_id, num_recordings: int, num_clie
                     },
                 )
                 total_processed += 1
-                print(f"[Bitratata] Готово: {len(text.split())} слов" + (" (обновлено)" if not created else ""))
-                # Краткая характеристика звонка (только для новых транскрипций, чтобы экономить токены)
-                if created:
-                    try:
-                        brief = _send_call_brief(text)
-                        if brief:
-                            trans.brief = brief[:500]
-                            trans.save(update_fields=["brief", "updated_at"])
-                    except Exception as e:
-                        logger.debug("Не удалось получить краткую характеристику звонка: %s", e)
+                print(
+                    "[Bitratata] Готово: "
+                    f"{len(text.split())} слов"
+                    + (" (обновлено)" if not created else "")
+                )
                 if total_processed % 3 == 0 or total_processed == num_recordings:
                     Run.objects.filter(pk=run.id).update(progress_current=total_processed)
             except Exception as e:
@@ -453,51 +467,28 @@ def _fetch_files_via_disk_folder(connection, limit: int):
     return out
 
 
-def _convert_to_16k_mono_16bit(wav_io: io.BytesIO) -> io.BytesIO:
-    """Привести WAV к 16 kHz, mono, 16-bit PCM для Vosk."""
-    import sys
-    if "audioop" not in sys.modules:
-        try:
-            import audioop_lts
-            sys.modules["audioop"] = audioop_lts
-        except ImportError:
-            pass
-    from pydub import AudioSegment
-    wav_io.seek(0)
-    seg = AudioSegment.from_file(wav_io, format="wav")
-    seg = seg.set_frame_rate(16000).set_channels(1)
-    out = io.BytesIO()
-    seg.export(out, format="wav")
-    out.seek(0)
-    return out
-
-
-def _load_vosk_model():
-    """Загрузить модель Vosk один раз (путь из settings)."""
+def _load_whisper_model():
+    """Загрузить модель faster-whisper один раз (настройки из settings)."""
     try:
-        from vosk import Model
+        from faster_whisper import WhisperModel
     except ImportError:
         import sys
         raise RuntimeError(
-            f"Модуль vosk не установлен. Задача выполняется в Python: {sys.executable}. "
-            f"Установите vosk в это окружение: {sys.executable} -m pip install vosk"
+            f"Модуль faster-whisper не установлен. Задача выполняется в Python: {sys.executable}. "
+            f"Установите: {sys.executable} -m pip install faster-whisper"
         ) from None
-    model_path = str(getattr(settings, "VOSK_MODEL_PATH", os.path.join(settings.BASE_DIR, "vosk-model-ru-0.42")))
-    if not model_path or not os.path.isdir(model_path):
-        raise RuntimeError(f"Модель Vosk не найдена: {model_path}")
-    return Model(model_path)
+    model_size = getattr(settings, "WHISPER_MODEL_SIZE", "base")
+    device = getattr(settings, "WHISPER_DEVICE", "cpu")
+    compute_type = getattr(settings, "WHISPER_COMPUTE_TYPE", "int8")
+    download_root = getattr(settings, "WHISPER_DOWNLOAD_ROOT", None)
+    kwargs = {"device": device, "compute_type": compute_type}
+    if download_root:
+        kwargs["download_root"] = str(download_root)
+    return WhisperModel(model_size, **kwargs)
 
 
-def _download_and_transcribe(file_info: dict, connection, vosk_model) -> str:
+def _download_and_transcribe(file_info: dict, connection, whisper_model) -> str:
     import wave
-    try:
-        from vosk import KaldiRecognizer
-    except ImportError:
-        import sys
-        raise RuntimeError(
-            f"Модуль vosk не установлен. Задача выполняется в Python: {sys.executable}. "
-            f"Установите vosk в это окружение: {sys.executable} -m pip install vosk"
-        ) from None
 
     download_url = file_info.get("DOWNLOAD_URL")
     if not download_url:
@@ -517,7 +508,6 @@ def _download_and_transcribe(file_info: dict, connection, vosk_model) -> str:
         wav_io = io.BytesIO(raw)
     except Exception:
         try:
-            # Python 3.13+: stdlib audioop removed; pydub needs it — use audioop-lts
             import sys
             if "audioop" not in sys.modules:
                 try:
@@ -534,31 +524,23 @@ def _download_and_transcribe(file_info: dict, connection, vosk_model) -> str:
             raise RuntimeError(f"Аудио не прочитано (wav/pydub): {e}")
 
     wav_io.seek(0)
-    wf = wave.open(wav_io, "rb")
-    rate, nch, width = wf.getframerate(), wf.getnchannels(), wf.getsampwidth()
-    wf.close()
-    # Vosk ожидает 16 kHz, mono, 16-bit PCM
-    if rate != 16000 or nch != 1 or width != 2:
-        wav_io = _convert_to_16k_mono_16bit(wav_io)
-
-    wav_io.seek(0)
-    wf = wave.open(wav_io, "rb")
-    if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getcomptype() != "NONE":
-        raise RuntimeError("Vosk ожидает WAV: mono, 16-bit PCM")
-
-    rec = KaldiRecognizer(vosk_model, wf.getframerate())
-    rec.SetWords(True)
-    parts = []
-    while True:
-        data = wf.readframes(4000)
-        if len(data) == 0:
-            break
-        if rec.AcceptWaveform(data):
-            j = json_lib.loads(rec.Result())
-            parts.append(j.get("text", ""))
-    j = json_lib.loads(rec.FinalResult())
-    parts.append(j.get("text", ""))
-    return " ".join(parts).strip()
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp.write(wav_io.read())
+        tmp_path = tmp.name
+    try:
+        segments, _ = whisper_model.transcribe(tmp_path, language="ru", 
+        beam_size=1,
+        best_of=1,
+        temperature=0,
+        condition_on_previous_text=False,
+    )
+        parts = [s.text for s in segments if s.text]
+        return " ".join(parts).strip()
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 def _deepseek_client():
@@ -598,6 +580,7 @@ def _send_to_deepseek_flat(texts: list) -> str:
     if len(texts) > 50:
         data_lines.append(f"\n... и ещё {len(texts) - 50} записей.")
     user_content = "\n".join(prompt_parts) + "\n" + "\n".join(data_lines)
+    print(f"[Bitratata] DeepSeek: подготовлено {len(texts)} транскрипций (режим без пользователя)")
     response = client.chat.completions.create(
         model="deepseek-chat",
         messages=[
@@ -605,7 +588,9 @@ def _send_to_deepseek_flat(texts: list) -> str:
             {"role": "user", "content": user_content},
         ],
     )
-    return (response.choices[0].message.content or "").strip()
+    content = (response.choices[0].message.content or "").strip()
+    print(f"[Bitratata] DeepSeek: получен ответ (длина {len(content)} символов)")
+    return content
 
 
 def _send_to_deepseek_by_contacts(payload: list) -> str:
@@ -617,12 +602,16 @@ def _send_to_deepseek_by_contacts(payload: list) -> str:
     client = _deepseek_client()
     prompt_parts = _segment_prompt_parts()
 
-    def _one_batch(batch):
+    def _one_batch(batch, batch_index: int, total_batches: int):
         data_lines = []
         for entity_type, entity_id, texts in batch:
             combined = "\n\n".join(texts)
             data_lines.append(f'\n--- Сущность {entity_type} (entity_id: "{entity_id}") ---\n{combined}')
         user_content = "\n".join(prompt_parts) + "\n" + "\n".join(data_lines)
+        print(
+            f"[Bitratata] DeepSeek: батч {batch_index}/{total_batches}, "
+            f"сущностей в батче: {len(batch)}"
+        )
         response = client.chat.completions.create(
             model="deepseek-chat",
             messages=[
@@ -633,18 +622,25 @@ def _send_to_deepseek_by_contacts(payload: list) -> str:
                 {"role": "user", "content": user_content},
             ],
         )
-        return (response.choices[0].message.content or "").strip()
+        content = (response.choices[0].message.content or "").strip()
+        print(
+            "[Bitratata] DeepSeek: батч "
+            f"{batch_index}/{total_batches} — ответ длиной {len(content)} символов"
+        )
+        return content
 
     # Разбиваем по количеству сущностей, чтобы не переполнить контекст
     batch_size = 15
     if len(payload) <= batch_size:
-        return _one_batch(payload)
+        return _one_batch(payload, 1, 1)
 
     all_entities = []
     all_tags = []
+    total_batches = (len(payload) + batch_size - 1) // batch_size
     for i in range(0, len(payload), batch_size):
         batch = payload[i : i + batch_size]
-        raw = _one_batch(batch)
+        batch_index = i // batch_size + 1
+        raw = _one_batch(batch, batch_index, total_batches)
         try:
             parsed = json_lib.loads(raw)
         except Exception:

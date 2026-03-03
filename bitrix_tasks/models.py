@@ -161,6 +161,11 @@ class Bitrix24Task(models.Model):
         default=0,
         help_text="Не используется: задания запускаются только вручную.",
     )
+    skip_existing = models.BooleanField(
+        "Пропускать уже транскрибированные записи",
+        default=True,
+        help_text="Если выключено — уже существующие транскрипции будут пересчитаны заново.",
+    )
     is_active = models.BooleanField("Включено", default=True)
     created_at = models.DateTimeField("Создано", auto_now_add=True)
     updated_at = models.DateTimeField("Обновлено", auto_now=True)

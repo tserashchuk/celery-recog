@@ -32,6 +32,7 @@ class Bitrix24TaskAdmin(admin.ModelAdmin):
                 task.num_recordings,
                 task.num_clients,
                 task.config_id,
+                task.skip_existing,
             )
             self.message_user(
                 request,

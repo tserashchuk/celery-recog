@@ -30,8 +30,9 @@ class TaskForm(forms.ModelForm):
 
     class Meta:
         model = Bitrix24Task
-        fields = ("name", "num_recordings")
+        fields = ("name", "num_recordings", "skip_existing")
         labels = {
             "name": "Название задания",
             "num_recordings": "Количество записей за запуск",
+            "skip_existing": "Пропускать уже транскрибированные записи",
         }
