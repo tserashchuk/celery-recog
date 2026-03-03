@@ -359,6 +359,12 @@ class ContactSegmentation(models.Model):
     )
     tags = models.JSONField("Теги", default=list, help_text="Список тегов из DeepSeek")
     raw_response = models.TextField("Ответ DeepSeek (JSON)", blank=True)
+    crm_snapshot = models.JSONField(
+        "CRM-срез по контакту",
+        default=dict,
+        blank=True,
+        help_text="Агрегированные данные из лидов и сделок (стадии, суммы, источники и т.п.).",
+    )
     updated_at = models.DateTimeField("Обновлено", auto_now=True)
 
     class Meta:

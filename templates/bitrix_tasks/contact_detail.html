@@ -29,6 +29,45 @@
         </div>
     {% endif %}
 
+    {% if segmentation and segmentation.crm_snapshot %}
+        {% with snap=segmentation.crm_snapshot %}
+            <h2>Данные из CRM</h2>
+            <p class="meta">
+                Основные агрегаты по лидам и сделкам, сохранённые при обогащении.
+            </p>
+            <div class="crm">
+                {% if snap.deals %}
+                    <p><strong>Сделки:</strong>
+                        {{ snap.deals.count|default:"0" }} шт.,
+                        сумма всех сделок: {{ snap.deals.total_amount|default:"0" }} {{ snap.deals.currency|default:"" }},
+                        успешных сделок: {{ snap.deals.won_count|default:"0" }},
+                        сумма успешных: {{ snap.deals.won_amount|default:"0" }} {{ snap.deals.currency|default:"" }}.
+                        {% if snap.deals.last_stage_id %}
+                            Последняя стадия: {{ snap.deals.last_stage_id }}.
+                        {% endif %}
+                        {% if snap.deals.last_close_date %}
+                            Дата последней сделки: {{ snap.deals.last_close_date }}.
+                        {% endif %}
+                    </p>
+                {% endif %}
+                {% if snap.leads %}
+                    <p><strong>Лиды:</strong>
+                        всего {{ snap.leads.count|default:"0" }} шт.
+                        {% if snap.leads.last_status_id %}
+                            Последний статус: {{ snap.leads.last_status_id }}.
+                        {% endif %}
+                        {% if snap.leads.last_source_id %}
+                            Источник последнего лида: {{ snap.leads.last_source_id }}.
+                        {% endif %}
+                        {% if snap.leads.last_date_create %}
+                            Дата последнего лида: {{ snap.leads.last_date_create }}.
+                        {% endif %}
+                    </p>
+                {% endif %}
+            </div>
+        {% endwith %}
+    {% endif %}
+
     <h2>Транскрипции записей</h2>
     {% if transcriptions %}
         {% for t in transcriptions %}

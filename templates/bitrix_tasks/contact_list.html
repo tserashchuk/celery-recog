@@ -18,7 +18,12 @@
 <body>
     <h1>Мои клиенты</h1>
     <p>Контакты с тегами сегментации. Нажмите на контакт, чтобы посмотреть транскрипции записей.</p>
-    <p><a href="{% url 'home' %}">На главную</a> · <a href="{% url 'my_tasks' %}">Мои задания</a> · <a href="{% url 'logout' %}">Выйти</a></p>
+    <p>
+        <a href="{% url 'home' %}">На главную</a> ·
+        <a href="{% url 'my_tasks' %}">Мои задания</a> ·
+        <a href="{% url 'enrich_contacts' %}">Обогатить данные по клиентам</a> ·
+        <a href="{% url 'logout' %}">Выйти</a>
+    </p>
 
     {% if contact_list_data %}
         {% for contact, seg, brief in contact_list_data %}

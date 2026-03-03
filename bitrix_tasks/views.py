@@ -203,7 +203,13 @@ def contact_list(request):
             brief_by_cid[cid] = row["brief"]
 
     contact_list_data = [(c, seg_by_cid.get(c.id), brief_by_cid.get(c.id)) for c in contacts]
-    return render(request, "bitrix_tasks/contact_list.html", {"contact_list_data": contact_list_data})
+    return render(
+        request,
+        "bitrix_tasks/contact_list.html",
+        {
+            "contact_list_data": contact_list_data,
+        },
+    )
 
 
 @login_required
@@ -220,3 +226,16 @@ def contact_detail(request, contact_id):
         "bitrix_tasks/contact_detail.html",
         {"contact": contact, "transcriptions": transcriptions, "segmentation": segmentation},
     )
+
+
+@login_required
+def enrich_contacts(request):
+    """Запустить фоновое обогащение контактов CRM-данными для текущего пользователя."""
+    from .tasks import enrich_contacts_from_crm
+
+    enrich_contacts_from_crm.delay(request.user.id)
+    messages.success(
+        request,
+        "Обогащение клиентов по CRM запущено. Через некоторое время обновите список клиентов.",
+    )
+    return redirect("contact_list")

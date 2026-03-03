@@ -11,6 +11,7 @@ urlpatterns = [
     path("tasks/progress/", bitrix_views.run_progress, name="run_progress"),
     path("connection/", bitrix_views.connection_edit, name="connection_edit"),
     path("contacts/", bitrix_views.contact_list, name="contact_list"),
+    path("contacts/enrich/", bitrix_views.enrich_contacts, name="enrich_contacts"),
     path("contacts/<int:contact_id>/", bitrix_views.contact_detail, name="contact_detail"),
     path("accounts/register/", bitrix_views.RegisterView.as_view(), name="register"),
     path("accounts/login/", LoginView.as_view(template_name="bitrix_tasks/login.html"), name="login"),

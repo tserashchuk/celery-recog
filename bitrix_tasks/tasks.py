@@ -725,3 +725,200 @@ def _send_run_summary(texts: list) -> str:
     # Финальное саммари по саммари
     combined = "\n\n---\n\n".join(partial_summaries)
     return _summarize_piece(combined, 1, 1)
+
+
+@shared_task(bind=True, name="bitrix_tasks.enrich_contacts_from_crm")
+def enrich_contacts_from_crm(self, user_id: int):
+    """
+    Обогатить данные по контактам пользователя за счёт CRM (лиды/сделки) и сохранить
+    агрегированный срез в ContactSegmentation.crm_snapshot.
+
+    Таск не трогает транскрипции и теги, только дополняет CRM-срез.
+    """
+    from .models import ContactSegmentation  # локальный импорт, чтобы избежать циклов
+
+    user = _get_user(user_id)
+    if not user:
+        return {"error": f"Пользователь {user_id} не найден"}
+
+    contacts = Contact.objects.filter(user_id=user_id).select_related("connection")
+    total = contacts.count()
+    updated = 0
+
+    print(f"[Bitratata] Обогащение CRM-среза для пользователя {user_id}: контактов {total}")
+
+    for idx, contact in enumerate(contacts, start=1):
+        conn = contact.connection
+        if not conn or not conn.webhook_url:
+            continue
+        try:
+            snapshot = _build_crm_snapshot_for_contact(conn, contact)
+        except Exception as e:
+            logger.debug(
+                "Не удалось собрать CRM-срез для контакта %s (%s %s): %s",
+                contact.id,
+                contact.entity_type,
+                contact.entity_id,
+                e,
+            )
+            continue
+        if not snapshot:
+            continue
+
+        seg, _ = ContactSegmentation.objects.get_or_create(
+            contact=contact,
+            defaults={"user_id": user_id},
+        )
+        seg.crm_snapshot = snapshot
+        seg.save(update_fields=["crm_snapshot", "updated_at"])
+        updated += 1
+
+        if idx % 10 == 0 or idx == total:
+            print(
+                f"[Bitratata] Обогащение CRM: обработано {idx}/{total} контактов, "
+                f"обновлено срезов: {updated}"
+            )
+
+    print(
+        f"[Bitratata] Обогащение CRM завершено для пользователя {user_id}: "
+        f"контактов {total}, обновлено срезов {updated}"
+    )
+    return {"user_id": user_id, "contacts_total": total, "snapshots_updated": updated}
+
+
+def _build_crm_snapshot_for_contact(connection, contact) -> dict:
+    """
+    Собрать агрегированный срез по лидам и сделкам для контакта.
+
+    Основные агрегаты:
+    - по сделкам: количество, суммы, успешные/проигранные, последняя стадия и дата;
+    - по лидам (если привязаны): статусы, источник.
+    """
+    webhook = connection.webhook_url
+    entity_type = (contact.entity_type or "CALL").upper()
+    entity_id = str(contact.entity_id)
+
+    snapshot: dict = {
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+    }
+
+    # Блок по сделкам, привязанным к контакту
+    deals = []
+    try:
+        # Берём только нужные поля, без лишнего
+        data = _call_bitrix(
+            webhook,
+            "crm.deal.list",
+            {
+                "filter": {"CONTACT_ID": entity_id},
+                "select": [
+                    "ID",
+                    "TITLE",
+                    "STAGE_ID",
+                    "CATEGORY_ID",
+                    "OPPORTUNITY",
+                    "CURRENCY_ID",
+                    "CLOSED",
+                    "CLOSEDATE",
+                ],
+                "order": {"ID": "DESC"},
+            },
+        )
+        raw_deals = data.get("result") or []
+        if isinstance(raw_deals, list):
+            deals = raw_deals
+        elif raw_deals:
+            deals = [raw_deals]
+    except Exception as e:
+        logger.debug("crm.deal.list для контакта %s: %s", entity_id, e)
+
+    total_amount = 0.0
+    won_amount = 0.0
+    deals_count = len(deals)
+    won_count = 0
+    last_deal_stage = None
+    last_deal_close_date = None
+    currency = None
+
+    for d in deals:
+        amount = float(d.get("OPPORTUNITY") or 0) or 0.0
+        total_amount += amount
+        currency = currency or d.get("CURRENCY_ID")
+        stage_id = d.get("STAGE_ID")
+        closed = str(d.get("CLOSED") or "").upper() == "Y"
+        close_date = d.get("CLOSEDATE")
+
+        if closed and stage_id and "WON" in str(stage_id).upper():
+            won_count += 1
+            won_amount += amount
+
+        # Последняя сделка по дате закрытия или по ID (они уже отсортированы DESC)
+        if last_deal_stage is None:
+            last_deal_stage = stage_id
+            last_deal_close_date = close_date
+
+    snapshot["deals"] = {
+        "count": deals_count,
+        "total_amount": total_amount,
+        "won_amount": won_amount,
+        "won_count": won_count,
+        "last_stage_id": last_deal_stage,
+        "last_close_date": last_deal_close_date,
+        "currency": currency,
+    }
+
+    # Блок по лидам, если контакт — LEAD или есть связь по ID
+    leads = []
+    try:
+        if entity_type == "LEAD":
+            lead_filter = {"ID": entity_id}
+        else:
+            # Универсальный случай: ищем лиды, где CONTACT_ID совпадает (если настроена такая связь)
+            lead_filter = {"CONTACT_ID": entity_id}
+
+        data = _call_bitrix(
+            webhook,
+            "crm.lead.list",
+            {
+                "filter": lead_filter,
+                "select": [
+                    "ID",
+                    "TITLE",
+                    "STATUS_ID",
+                    "SOURCE_ID",
+                    "SOURCE_DESCRIPTION",
+                    "OPPORTUNITY",
+                    "CURRENCY_ID",
+                    "DATE_CREATE",
+                ],
+                "order": {"ID": "DESC"},
+            },
+        )
+        raw_leads = data.get("result") or []
+        if isinstance(raw_leads, list):
+            leads = raw_leads
+        elif raw_leads:
+            leads = [raw_leads]
+    except Exception as e:
+        logger.debug("crm.lead.list для контакта %s: %s", entity_id, e)
+
+    leads_count = len(leads)
+    last_lead_status = None
+    last_lead_source = None
+    last_lead_date = None
+
+    if leads:
+        last = leads[0]
+        last_lead_status = last.get("STATUS_ID")
+        last_lead_source = last.get("SOURCE_ID")
+        last_lead_date = last.get("DATE_CREATE")
+
+    snapshot["leads"] = {
+        "count": leads_count,
+        "last_status_id": last_lead_status,
+        "last_source_id": last_lead_source,
+        "last_date_create": last_lead_date,
+    }
+
+    return snapshot
