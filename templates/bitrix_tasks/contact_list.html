@@ -40,6 +40,19 @@
                         {% endfor %}
                     </div>
                 {% endif %}
+                {% if seg and seg.crm_snapshot %}
+                    {% with snap=seg.crm_snapshot %}
+                        <div class="meta">
+                            {% if snap.deals %}
+                                Сделки: {{ snap.deals.count|default:"0" }} шт.,
+                                сумма: {{ snap.deals.total_amount|default:"0" }} {{ snap.deals.currency|default:"" }}.
+                            {% endif %}
+                            {% if snap.leads %}
+                                Лиды: {{ snap.leads.count|default:"0" }} шт.
+                            {% endif %}
+                        </div>
+                    {% endwith %}
+                {% endif %}
             </div>
         {% endfor %}
     {% else %}
