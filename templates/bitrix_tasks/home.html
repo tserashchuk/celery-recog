@@ -26,6 +26,8 @@
             Вы вошли как <strong>{{ user.username }}</strong>.
             <a href="{% url 'my_tasks' %}">Мои задания</a> ·
             <a href="{% url 'contact_list' %}">Мои клиенты</a> ·
+            <a href="{% url 'deepseek_query' %}">Вопрос к DeepSeek</a> ·
+            <a href="{% url 'plan_with_ai' %}">Составить план работ с ИИ</a> ·
             <a href="{% url 'logout' %}">Выйти</a>
         {% else %}
             <a href="{% url 'login' %}">Войти</a> ·

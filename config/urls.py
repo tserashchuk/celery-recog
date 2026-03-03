@@ -6,6 +6,8 @@ from bitrix_tasks import views as bitrix_views
 
 urlpatterns = [
     path("", bitrix_views.home, name="home"),
+    path("deepseek/", bitrix_views.deepseek_query, name="deepseek_query"),
+    path("plan/", bitrix_views.plan_with_ai, name="plan_with_ai"),
     path("tasks/", bitrix_views.my_tasks, name="my_tasks"),
     path("tasks/<int:task_id>/run/", bitrix_views.run_task, name="run_task"),
     path("tasks/progress/", bitrix_views.run_progress, name="run_progress"),

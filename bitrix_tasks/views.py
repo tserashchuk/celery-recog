@@ -8,7 +8,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse_lazy
 from django.views.generic import FormView
 
-from .forms import ConnectionForm, RegisterForm, TaskForm
+from .forms import ConnectionForm, DeepSeekQueryForm, RegisterForm, TaskForm
 from .models import (
     Bitrix24Task,
     BitrixConnection,
@@ -239,3 +239,205 @@ def enrich_contacts(request):
         "Обогащение клиентов по CRM запущено. Через некоторое время обновите список клиентов.",
     )
     return redirect("contact_list")
+
+
+@login_required
+def deepseek_query(request):
+    """
+    Страница, где пользователь может задать произвольный вопрос,
+    а DeepSeek ответит на основе его звонков.
+    """
+    from .models import Transcription
+    from .tasks import _deepseek_client
+
+    result = None
+
+    if request.method == "POST":
+        form = DeepSeekQueryForm(request.POST)
+        if form.is_valid():
+            question = form.cleaned_data["question"]
+
+            texts_qs = (
+                Transcription.objects.filter(contact__user=request.user)
+                .order_by("-updated_at")
+                .values_list("text", flat=True)[:100]
+            )
+            texts = [t or "" for t in texts_qs]
+            if not texts:
+                result = "Пока нет транскрипций звонков для анализа."
+            else:
+                client = _deepseek_client()
+                joined = "\n\n---\n\n".join(texts)
+                max_chars = 20000
+                joined = joined[:max_chars]
+
+                response = client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "Ты аналитик телефонных звонков и продуктовый консультант. "
+                                "Отвечай по-русски, давай структурированные, практические рекомендации."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                "Вот транскрипции моих звонков с клиентами (обрезаны по длине если нужно):\n\n"
+                                f"{joined}\n\n"
+                                f"Мой вопрос: {question}"
+                            ),
+                        },
+                    ],
+                )
+                result = (response.choices[0].message.content or "").strip()
+    else:
+        form = DeepSeekQueryForm()
+
+    return render(
+        request,
+        "bitrix_tasks/deepseek_query.html",
+        {"form": form, "result": result},
+    )
+
+
+@login_required
+def plan_with_ai(request):
+    """
+    Страница «Составить план работ с ИИ».
+
+    DeepSeek получает срез по контактам (теги + CRM-сnapshot по сделкам/лидам)
+    и возвращает краткий приоритизированный план действий по клиентам.
+    """
+    from .models import ContactSegmentation
+    from .tasks import _deepseek_client
+
+    plan_text = None
+
+    if request.method == "POST":
+        # Берём до 100 последних сегментаций по контактам пользователя
+        segs = (
+            ContactSegmentation.objects.filter(user=request.user)
+            .select_related("contact")
+            .order_by("-updated_at")[:100]
+        )
+        if not segs:
+            plan_text = "Пока нет сегментаций по клиентам. Сначала запустите обработку звонков и сегментацию."
+        else:
+            lines = []
+            for seg in segs:
+                c = seg.contact
+                snap = seg.crm_snapshot or {}
+                deals = snap.get("deals") or {}
+                leads = snap.get("leads") or {}
+                tags = seg.tags or []
+
+                line_parts = [
+                    f"Клиент: {str(c)} (entity_type={c.entity_type}, entity_id={c.entity_id})",
+                ]
+                if tags:
+                    line_parts.append("теги: " + ", ".join(tags))
+                if deals:
+                    line_parts.append(
+                        f"сделки: count={deals.get('count', 0)}, "
+                        f"total_amount={deals.get('total_amount', 0)}, "
+                        f"won_amount={deals.get('won_amount', 0)}, "
+                        f"last_stage_id={deals.get('last_stage_id')}, "
+                        f"last_close_date={deals.get('last_close_date')}"
+                    )
+                if leads:
+                    line_parts.append(
+                        f"лиды: count={leads.get('count', 0)}, "
+                        f"last_status_id={leads.get('last_status_id')}, "
+                        f"last_source_id={leads.get('last_source_id')}, "
+                        f"last_date_create={leads.get('last_date_create')}"
+                    )
+                lines.append(" | ".join(line_parts))
+
+            context_block = "\n".join(lines)
+            # Ограничиваем длину, чтобы не переполнить контекст
+            max_chars = 20000
+            context_block = context_block[:max_chars]
+
+            client = _deepseek_client()
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Ты руководитель отдела продаж и продуктовый аналитик. "
+                            "У тебя есть список клиентов с тегами сегментации и агрегатами по сделкам/лидам. "
+                            "Нужно составить краткий приоритизированный план работы с каждым клиентом. "
+                            "Формат ответа: строго валидный JSON без пояснений и markdown. "
+                            "Структура: {\"clients\": [{\"client_label\": str, \"priority\": int, \"segment\": str, \"reason\": str, \"suggested_actions\": [str, ...]}]}. "
+                            "client_label — краткий идентификатор клиента (можно брать из строки \"Клиент: ...\"), "
+                            "priority — целое число (1 — самый высокий приоритет, далее 2, 3, ...), "
+                            "segment — краткое описание сегмента клиента, "
+                            "reason — 1–2 фразы, почему именно этот клиент/сегмент в таком приоритете, "
+                            "suggested_actions — список конкретных шагов для менеджеров по этому клиенту."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Вот данные по клиентам (одна строка на клиента, содержит тип сущности, ID, теги, агрегаты по сделкам и лидам):\n\n"
+                            f"{context_block}\n\n"
+                            "На основе этих данных сформируй JSON с ключом \"clients\", "
+                            "где элементы отсортированы по возрастанию priority (1, 2, 3, ...)."
+                        ),
+                    },
+                ],
+            )
+            raw = (response.choices[0].message.content or "").strip()
+            try:
+                import json as _json
+
+                # Если модель вернула JSON внутри ``` или ```json, убираем обёртку
+                if raw.startswith("```"):
+                    # отрезаем первую строку с ``` или ```json
+                    parts = raw.split("\n")
+                    parts = parts[1:]
+                    # если в конце есть закрывающие ```, убираем их
+                    if parts and parts[-1].strip().startswith("```"):
+                        parts = parts[:-1]
+                    raw = "\n".join(parts).strip()
+
+                parsed = _json.loads(raw)
+                # Поддерживаем оба варианта ключа на всякий случай
+                steps = parsed.get("clients") or parsed.get("steps") or []
+
+                # Аккуратно нормализуем переносы строк и лишние пробелы
+                def _norm(s: str) -> str:
+                    return " ".join((s or "").split())
+
+                normalized_steps = []
+                for step in steps:
+                    if not isinstance(step, dict):
+                        continue
+                    step = dict(step)
+                    for key in ("client_label", "segment", "reason"):
+                        if isinstance(step.get(key), str):
+                            step[key] = _norm(step[key])
+                    actions = step.get("suggested_actions")
+                    if isinstance(actions, list):
+                        step["suggested_actions"] = [
+                            _norm(a) for a in actions if isinstance(a, str)
+                        ]
+                    normalized_steps.append(step)
+                steps = normalized_steps
+            except Exception:
+                # Если не удалось распарсить JSON — показываем сырой ответ
+                plan_text = raw
+                steps = []
+            else:
+                plan_text = None
+    else:
+        steps = []
+
+    return render(
+        request,
+        "bitrix_tasks/plan_with_ai.html",
+        {"plan": plan_text, "steps": steps},
+    )

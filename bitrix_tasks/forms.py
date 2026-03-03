@@ -36,3 +36,15 @@ class TaskForm(forms.ModelForm):
             "num_recordings": "Количество записей за запуск",
             "skip_existing": "Пропускать уже транскрибированные записи",
         }
+
+
+class DeepSeekQueryForm(forms.Form):
+    """Произвольный запрос в DeepSeek на основе собственных звонков."""
+
+    question = forms.CharField(
+        label="Ваш вопрос к DeepSeek",
+        widget=forms.Textarea(attrs={"rows": 4}),
+        help_text=(
+            "Например: «Сформулируй основные сегменты моих клиентов и рекомендации по доработке продукта»."
+        ),
+    )
